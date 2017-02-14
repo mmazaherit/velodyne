@@ -23,7 +23,8 @@ int main(int argc, char **argv)
   rosbag::Bag bag_out(bagfile.c_str(),rosbag::bagmode::Write);
 
   ros::NodeHandle ns;
-
+  ns.setParam("read_fast",true);
+  ns.setParam("read_once",true);
   velodyne_driver::InputPCAP inputpcap(ns,2368,100,pcapfile);
 
 
@@ -32,7 +33,7 @@ int main(int argc, char **argv)
   velodyne_rawdata::RawData data_;
 
   std::string calibfile="/home/mehdi/velodyne_ws/src/velodyne/velodyne_pointcloud/params/32db.yaml";
-  data_.setupOffline(calibfile,0,100);
+  data_.setupOffline(calibfile,0,130);
   data_.setParameters(0,130,0,0);
   velodyne_msgs::VelodynePacket vp;
   int counter=0;
@@ -61,18 +62,15 @@ int main(int argc, char **argv)
       continue;
 
     sensor_msgs::PointCloud2 pc2;
-    //pcl::PCLPointCloud2 pcl2;
 
-    //pcl::toPCLPointCloud2(inPc_ ,pcl2);
-    //pcl_conversions::copyPCLPointCloud2MetaData(pcl2,pc2);
     pcl::toROSMsg(inPc_,pc2);
 
     bag_out.write("/map",ros::Time(vp.stamp),pc2);
     counter++;
-    if(counter==1000)
-      break;
+
     if(!ros::ok())
       break;
+    std::cout<<"\r"<<vp.stamp;
   }
 
   bag_out.close();
