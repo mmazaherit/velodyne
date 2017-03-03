@@ -38,7 +38,7 @@ inline std::string &trim(std::string &s, const char* t = " \t\n\r\f\v")
 }
 
 const double deg2rad=3.14159265/180.0;
-const uint32_t BaseTime=1487200000;
+
 
 void ReadImuFile2bag(std::string file, rosbag::Bag &bag_out, ros::Time StartTime,ros::Time EndTime )
 {
@@ -51,11 +51,17 @@ void ReadImuFile2bag(std::string file, rosbag::Bag &bag_out, ros::Time StartTime
   if(!ifs.is_open())
   {
     std::cout<<"could not open "<<file<<std::endl;
+    return ;
   }
 
   bool calibrationMsgFound=false;
   double IMUCalibrationParams[3];
 
+  int counter=0;
+
+  bool BaseHourFound=false;
+  uint64_t BaseHourMicrosec=0;
+  uint64_t BaseHourMicrosecTopofHour=0;
   while(ifs)
   {
     std::string line;
@@ -84,9 +90,18 @@ void ReadImuFile2bag(std::string file, rosbag::Bag &bag_out, ros::Time StartTime
       ImuMsg.angular_velocity_covariance=ImuMsg.linear_acceleration_covariance=
           {0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0};
 
-      uint64_t time_microsec =  strtoull(record[3].c_str(),(char**)NULL,10);
-      uint64_t sec=time_microsec/1000000;
-      uint64_t nanosec=(time_microsec%1000000)*1000;
+      uint64_t time_microsec_beg =  strtoull(record[3].c_str(),(char**)NULL,10);
+
+      if(!BaseHourFound)
+      {
+        BaseHourMicrosec=time_microsec_beg;
+        BaseHourMicrosecTopofHour=time_microsec_beg%3600000000;
+        BaseHourFound=true;
+      }
+
+      uint64_t time_microsec_pasthour=(time_microsec_beg -BaseHourMicrosec)+ BaseHourMicrosecTopofHour;
+      uint64_t sec=time_microsec_pasthour/1000000;
+      uint64_t nanosec=(time_microsec_pasthour%1000000)*1000;
 
       ImuMsg.linear_acceleration.x=atof(record[4].c_str());
       ImuMsg.linear_acceleration.y=atof(record[5].c_str());
@@ -96,15 +111,16 @@ void ReadImuFile2bag(std::string file, rosbag::Bag &bag_out, ros::Time StartTime
       ImuMsg.angular_velocity.y=atof(record[8].c_str());
       ImuMsg.angular_velocity.z=atof(record[9].c_str());
 
-      ImuMsg.header.stamp=ros::Time(BaseTime+sec,nanosec);
+      ImuMsg.header.stamp=ros::Time(sec,nanosec);
       FoundGoodImuMsg=true;
 
     }
     else if(record[0].compare("508")==0)
     {
-      uint64_t time_microsec =  strtoull(record[2].c_str(),(char**)NULL,10);
-      uint64_t sec=time_microsec/1000000;
-      uint64_t nanosec=(time_microsec%1000000)*1000;
+      uint64_t time_microsec_beg =  strtoull(record[2].c_str(),(char**)NULL,10);
+      uint64_t time_microsec_pasthour=time_microsec_beg%3600000000;
+      uint64_t sec=time_microsec_pasthour/1000000;
+      uint64_t nanosec=(time_microsec_pasthour%1000000)*1000;
 
       // unknown covariance
       ImuMsg.orientation_covariance={0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0};
@@ -118,7 +134,7 @@ void ReadImuFile2bag(std::string file, rosbag::Bag &bag_out, ros::Time StartTime
       double yaw=deg2rad*atof(record[8].c_str());
       ImuMsg.orientation= tf::createQuaternionMsgFromRollPitchYaw(roll,pitch,yaw);
 
-      ImuMsg.header.stamp=ros::Time(BaseTime+sec,nanosec);
+      ImuMsg.header.stamp=ros::Time(sec,nanosec);
       FoundGoodImuMsg=false; // don't publish these messages for now
 
     }
@@ -132,14 +148,15 @@ void ReadImuFile2bag(std::string file, rosbag::Bag &bag_out, ros::Time StartTime
 
     if(FoundGoodImuMsg && ImuMsg.header.stamp>=StartTime)
     {
+      counter++;
       bag_out.write("imu",ImuMsg.header.stamp,ImuMsg);
       std::cout<<"\rsaving Imu msg "<<ImuMsg.header.stamp;
     }else
     {
-      std::cout<<"discard Imu msg "<<ImuMsg.header.stamp<<std::endl;
+      std::cout<<"\rdiscard Imu msg "<<ImuMsg.header.stamp;
     }
 
-    if(ImuMsg.header.stamp>= EndTime)
+    if(ImuMsg.header.stamp> EndTime)
     {
       std::cout<<"\n reached end of point cloud time"<<endl;
       break;
@@ -149,6 +166,8 @@ void ReadImuFile2bag(std::string file, rosbag::Bag &bag_out, ros::Time StartTime
   }
 
   ifs.close();
+  std::cout<<"\nSaved Imu Messages in the bag "<<counter<< endl;
+
 }
 inline std::string GetFileFolderName(const std::string &FilePath)
 {
@@ -235,6 +254,8 @@ sensor_msgs::LaserScan::Ptr process(const velodyne_rawdata::VPointCloud &pcl_in_
  float range_min = 1e7f, range_max = -1e7f;
 
  // Initialize the simulated laser scan
+ //scan_out->ranges.resize(num_of_bins);
+ num_of_bins=36000;
  scan_out->ranges.resize(num_of_bins);
  scan_out->intensities.resize(num_of_bins);
  for (int i = 0; i < num_of_bins; ++i)
@@ -247,39 +268,47 @@ sensor_msgs::LaserScan::Ptr process(const velodyne_rawdata::VPointCloud &pcl_in_
  auto itEnd = pcl_in_.end();
  for (auto it = pcl_in_.begin(); it != itEnd; ++it)
  {
+
+   if(it->laser_number!=15) // only the middle beam is considered
+     continue;
 //        ROS_INFO_STREAM("Point: " << it->x << ", " << it->y << ", " << it->z);
 
    // Check the point height
-   if (params_.min_z != params_.max_z)
-   {
-     if (it->z < params_.min_z || it->z > params_.max_z)
-       continue;
-   }
+   //if (params_.min_z != params_.max_z)
+  // {
+   //  if (it->z < params_.min_z || it->z > params_.max_z)
+    //   continue;
+  // }
 
    // Conversion to the polar coordinates
    float mag = std::sqrt(it->x * it->x + it->y * it->y);
    float ang = std::atan2(it->y, it->x) * rad_to_deg;
+
+   mag=it->distance;
+   //ang= (float)it->azimuth/36000.0*2*3.141592 ;
 //        float mag = cv::sqrt(it->x * it->x + it->y * it->y);
 //        float ang = cv::fastAtan2(it->y, it->x); // precision ~0.3 degrees
 
 //        ROS_INFO_STREAM("Polar coords: " << mag << ", " << ang);
 
    // Check the point distance
-   if (params_.min_range > 0.0 && mag < params_.min_range)
-     continue;
+   //if (params_.min_range > 0.0 && mag < params_.min_range)
+    // continue;
 
    // Find the corresponding bin
-   int n = (ang + 180.0f) * inv_angular_res;
+   /*int n = (ang + 180.0f) * inv_angular_res;
    if (n >= num_of_bins)
      n = num_of_bins - 1;
    else if (n < 0)
-     n = 0;
+     n = 0;*/
 
 //        ROS_INFO_STREAM("Bin num.: " << n);
 
    // Accumulate the value
+   int n=it->azimuth;
    if (mag < scan_out->ranges[n])
    {
+
      scan_out->ranges[n] = mag;
      scan_out->intensities[n] = it->intensity;
    }
@@ -290,9 +319,9 @@ sensor_msgs::LaserScan::Ptr process(const velodyne_rawdata::VPointCloud &pcl_in_
  }
 
  // Fill in all message members
- scan_out->angle_min = -float(3.141592);
- scan_out->angle_max = float(3.141592);
- scan_out->angle_increment = angular_res / rad_to_deg;
+ scan_out->angle_min =0;// -float(3.141592);
+ scan_out->angle_max = 2.0*float(3.141592);
+ scan_out->angle_increment = 0.01/180.0*3.141592;// angular_res / rad_to_deg;
  scan_out->range_min = range_min;
  scan_out->range_max = range_max;
  scan_out->scan_time = 0.1;      // TODO: get the value from Velodyne, fixed to 10Hz for now
@@ -341,6 +370,14 @@ int main(int argc, char **argv)
 
   std::string calibfile="/home/mehdi/velodyne_ws/src/velodyne/velodyne_pointcloud/params/32db.yaml";
   //std::string calibfile="/home/mehdi/velodyne_ws/src/velodyne/velodyne_pointcloud/params/VLP16db.yaml";
+
+  // 754 Packets/Second for Last or Strongest mode 1508 for dual (VLP-16 User Manual)
+  //const int PacketsPerRevolution=1808/10; //packet rate /HZ 32e
+  //const int PacketsPerRevolution=1508/10; //packet rate /HZ vlp16
+  const int PacketsPerRevolution=1;// each packet becomes a point cloud
+
+
+
   data_.setupOffline(calibfile,0,130);
   data_.setParameters(0,130,0,0);
   velodyne_msgs::VelodynePacket vp;
@@ -353,30 +390,23 @@ int main(int argc, char **argv)
   ros::Time FirstPacketTime, EndPacketTime;
   std::ofstream sampledataofs(BaseName+"_sample.xyz");
 
-  const int PacketsPerPointCloud=180;
+
   inPc_.points.clear();
   inPc_.width = 0;
   inPc_.height = 1;
   bool sampleoutput=false;
+
   while ( inputpcap.getPacket(&vp,0)!=-1)
   {
+        // unpack the raw data
+    vp.stamp=ros::Time(vp.stamp.sec,vp.stamp.nsec);
+    data_.unpack_simple(vp,inPc_);
 
-    // clear input point cloud to handle this packet
-    if(counter%PacketsPerPointCloud==1 && counter >1)
-    {
-      inPc_.points.clear();
-      inPc_.width = 0;
-      inPc_.height = 1;
-    }
-    // unpack the raw data
-    data_.unpack(vp,inPc_);
-    vp.stamp=ros::Time(vp.stamp.sec + BaseTime,vp.stamp.nsec);
-    sensor_msgs::PointCloud2 pc2;
-
-    if(counter%PacketsPerPointCloud==0 &&  counter>0)
+    if(counter%PacketsPerRevolution==0)
     {
       if(inPc_.width<1)
          continue;
+    sensor_msgs::PointCloud2 pc2;
 
     pcl::toROSMsg(inPc_,pc2);
 
@@ -388,8 +418,8 @@ int main(int argc, char **argv)
 
     pc2.header.frame_id=frame_id;
 
-    //bag_out.write("points2",pc2.header.stamp,pc2);
-    bag_out.write("scan",laserscan->header.stamp,*laserscan);
+    bag_out.write("points2",pc2.header.stamp,pc2);
+    //bag_out.write("scan",laserscan->header.stamp,*laserscan);
     EndPacketTime=vp.stamp;
 
     std::cout<<"\rend packet time "<<EndPacketTime ;
@@ -403,6 +433,10 @@ int main(int argc, char **argv)
       sampledataofs.flush();
       sampleoutput=true;
     }
+
+      inPc_.points.clear();
+      inPc_.width = 0;
+      inPc_.height = 1;
     }
 
     if(counter==0)
@@ -410,10 +444,6 @@ int main(int argc, char **argv)
       FirstPacketTime=vp.stamp;
       std::cout<<"\nVelodyne start packet time "<<FirstPacketTime<<std::endl;
     }
-
-
-
-
 
     counter++;
 
