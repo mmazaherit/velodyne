@@ -15,6 +15,7 @@
 #include <cstdint>
 #include "sensor_msgs/Imu.h"
 #include "sensor_msgs/LaserScan.h"
+#include "nav_msgs/Odometry.h"
 using namespace std;
 
 // trim from left
@@ -57,7 +58,8 @@ void ReadImuFile2bag(std::string file, rosbag::Bag &bag_out, ros::Time StartTime
   bool calibrationMsgFound=false;
   double IMUCalibrationParams[3];
 
-  int counter=0;
+  int counterIMU=0;
+  int counterGPS=0;
 
   bool BaseHourFound=false;
   uint64_t BaseHourMicrosec=0;
@@ -80,7 +82,7 @@ void ReadImuFile2bag(std::string file, rosbag::Bag &bag_out, ros::Time StartTime
                    record.push_back(s);
       }
 
-    bool FoundGoodImuMsg=false;
+    ros::Time MsgTime;
     if(record[0].compare("1462")==0)
     {
       // no estimate of orientation yet
@@ -90,7 +92,7 @@ void ReadImuFile2bag(std::string file, rosbag::Bag &bag_out, ros::Time StartTime
       ImuMsg.angular_velocity_covariance=ImuMsg.linear_acceleration_covariance=
           {0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0};
 
-      uint64_t time_microsec_beg =  strtoull(record[3].c_str(),(char**)NULL,10);
+      uint64_t time_microsec_beg =  strtoull(record[5].c_str(),(char**)NULL,10);
 
       if(!BaseHourFound)
       {
@@ -103,22 +105,38 @@ void ReadImuFile2bag(std::string file, rosbag::Bag &bag_out, ros::Time StartTime
       uint64_t sec=time_microsec_pasthour/1000000;
       uint64_t nanosec=(time_microsec_pasthour%1000000)*1000;
 
-      ImuMsg.linear_acceleration.x=atof(record[4].c_str());
-      ImuMsg.linear_acceleration.y=atof(record[5].c_str());
-      ImuMsg.linear_acceleration.z=atof(record[6].c_str());
+      ImuMsg.linear_acceleration.x=atof(record[6].c_str());
+      ImuMsg.linear_acceleration.y=atof(record[7].c_str());
+      ImuMsg.linear_acceleration.z=atof(record[8].c_str());
 
-      ImuMsg.angular_velocity.x=atof(record[7].c_str());
-      ImuMsg.angular_velocity.y=atof(record[8].c_str());
-      ImuMsg.angular_velocity.z=atof(record[9].c_str());
+      ImuMsg.angular_velocity.x=atof(record[9].c_str());
+      ImuMsg.angular_velocity.y=atof(record[10].c_str());
+      ImuMsg.angular_velocity.z=atof(record[11].c_str());
 
       ImuMsg.header.stamp=ros::Time(sec,nanosec);
-      FoundGoodImuMsg=true;
+      MsgTime=ImuMsg.header.stamp;
+      if(ImuMsg.header.stamp>=StartTime)
+      {
+        counterIMU++;
+        bag_out.write("imu",ImuMsg.header.stamp,ImuMsg);
+        std::cout<<"\rsaving Imu msg "<<ImuMsg.header.stamp;
+      }else
+      {
+        std::cout<<"\rdiscard Imu msg "<<ImuMsg.header.stamp;
+      }
 
     }
     else if(record[0].compare("508")==0)
     {
-      uint64_t time_microsec_beg =  strtoull(record[2].c_str(),(char**)NULL,10);
-      uint64_t time_microsec_pasthour=time_microsec_beg%3600000000;
+      uint64_t time_microsec_beg =  strtoull(record[4].c_str(),(char**)NULL,10);
+
+      if(!BaseHourFound)
+      {
+        BaseHourMicrosec=time_microsec_beg;
+        BaseHourMicrosecTopofHour=time_microsec_beg%3600000000;
+        BaseHourFound=true;
+      }
+      uint64_t time_microsec_pasthour=(time_microsec_beg -BaseHourMicrosec)+ BaseHourMicrosecTopofHour;
       uint64_t sec=time_microsec_pasthour/1000000;
       uint64_t nanosec=(time_microsec_pasthour%1000000)*1000;
 
@@ -129,34 +147,53 @@ void ReadImuFile2bag(std::string file, rosbag::Bag &bag_out, ros::Time StartTime
       ImuMsg.angular_velocity_covariance=ImuMsg.linear_acceleration_covariance=
           {-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0};
 
-      double roll= deg2rad*atof(record[6].c_str());
-      double pitch=deg2rad*atof(record[7].c_str());
-      double yaw=deg2rad*atof(record[8].c_str());
+
+      double x= atof(record[5].c_str());
+      double y= atof(record[6].c_str());
+      double z= atof(record[7].c_str());
+
+      double roll= deg2rad*atof(record[8].c_str());
+      double pitch=deg2rad*atof(record[9].c_str());
+      double yaw=deg2rad*atof(record[10].c_str());
+
       ImuMsg.orientation= tf::createQuaternionMsgFromRollPitchYaw(roll,pitch,yaw);
 
       ImuMsg.header.stamp=ros::Time(sec,nanosec);
-      FoundGoodImuMsg=false; // don't publish these messages for now
+      MsgTime=ImuMsg.header.stamp;
+
+      nav_msgs::Odometry odom;
+      odom.header.frame_id="odom";
+      odom.child_frame_id="base_link";
+      odom.header.stamp=MsgTime;
+      odom.pose.pose.position.x=x;
+      odom.pose.pose.position.y=y;
+      odom.pose.pose.position.z=z;
+      odom.pose.pose.orientation=tf::createQuaternionMsgFromRollPitchYaw(roll,pitch,yaw);
+
+      for(int i=0;i<36;i++)
+      {
+        odom.pose.covariance[i]=0.0; // uknown covariance
+        odom.twist.covariance[i]=-1.0; //unknown data
+      }
+
+      if(MsgTime>=StartTime)
+      {
+        counterGPS++;
+        bag_out.write("odom",odom.header.stamp,odom);
+        std::cout<<"\rsaving GPS msg "<<odom.header.stamp;
+      }else
+      {
+        std::cout<<"\rdiscard GPS msg "<<odom.header.stamp;
+      }
 
     }
      else if(record[0].compare("642")==0)
     {
       for(int i=0;i<3;i++)
         IMUCalibrationParams[i]=atof(record[i+1].c_str());
-
-
     }
 
-    if(FoundGoodImuMsg && ImuMsg.header.stamp>=StartTime)
-    {
-      counter++;
-      bag_out.write("imu",ImuMsg.header.stamp,ImuMsg);
-      std::cout<<"\rsaving Imu msg "<<ImuMsg.header.stamp;
-    }else
-    {
-      std::cout<<"\rdiscard Imu msg "<<ImuMsg.header.stamp;
-    }
-
-    if(ImuMsg.header.stamp> EndTime)
+    if(MsgTime> EndTime)
     {
       std::cout<<"\n reached end of point cloud time"<<endl;
       break;
@@ -166,7 +203,7 @@ void ReadImuFile2bag(std::string file, rosbag::Bag &bag_out, ros::Time StartTime
   }
 
   ifs.close();
-  std::cout<<"\nSaved Imu Messages in the bag "<<counter<< endl;
+  std::cout<<"\nSaved Imu Messages in the bag "<<counterIMU<< " GPS Message "<<counterGPS<< endl;
 
 }
 inline std::string GetFileFolderName(const std::string &FilePath)
@@ -373,15 +410,16 @@ int main(int argc, char **argv)
 
   // 754 Packets/Second for Last or Strongest mode 1508 for dual (VLP-16 User Manual)
   //const int PacketsPerRevolution=1808/10; //packet rate /HZ 32e
+
   //const int PacketsPerRevolution=1508/10; //packet rate /HZ vlp16
-  const int PacketsPerRevolution=1;// each packet becomes a point cloud
+  bool dumpperrevolution=true;
 
 
 
   data_.setupOffline(calibfile,0,130);
   data_.setParameters(0,130,0,0);
   velodyne_msgs::VelodynePacket vp;
-  int counter=0;
+  int counter=1;
 
   // allocate a point cloud with same time and frame ID as raw data
   velodyne_rawdata::VPointCloud inPc_;
@@ -396,16 +434,30 @@ int main(int argc, char **argv)
   inPc_.height = 1;
   bool sampleoutput=false;
 
-  while ( inputpcap.getPacket(&vp,0)!=-1)
+  uint16_t previousrotation;
+  while (inputpcap.getPacket(&vp,0)!=-1)
   {
-        // unpack the raw data
+
+    // unpack the raw data
+    const velodyne_rawdata::raw_packet_t* raw = (const velodyne_rawdata::raw_packet_t*) &vp.data[0];
+
+    //check if new revolution is happening
+    bool NewRevolution=false;
+    if(raw->blocks[0].rotation>=previousrotation)
+      NewRevolution=false;
+    else
+      NewRevolution=true;
+    previousrotation=raw->blocks[0].rotation;
+
+
     vp.stamp=ros::Time(vp.stamp.sec,vp.stamp.nsec);
     data_.unpack_simple(vp,inPc_);
 
-    if(counter%PacketsPerRevolution==0)
+    if( (dumpperrevolution && NewRevolution) || !dumpperrevolution)
     {
       if(inPc_.width<1)
          continue;
+
     sensor_msgs::PointCloud2 pc2;
 
     pcl::toROSMsg(inPc_,pc2);
@@ -430,7 +482,7 @@ int main(int argc, char **argv)
       {
         sampledataofs<<inPc_.points[k].x<<" "<<inPc_.points[k].y<<" "<<inPc_.points[k].z<<std::endl;
       }
-      sampledataofs.flush();
+      sampledataofs.close();
       sampleoutput=true;
     }
 
@@ -439,7 +491,7 @@ int main(int argc, char **argv)
       inPc_.height = 1;
     }
 
-    if(counter==0)
+    if(counter==1)
     {
       FirstPacketTime=vp.stamp;
       std::cout<<"\nVelodyne start packet time "<<FirstPacketTime<<std::endl;
