@@ -86,10 +86,10 @@ void ReadImuFile2bag(std::string file, rosbag::Bag &bag_out, ros::Time StartTime
     if(record[0].compare("1462")==0)
     {
       // no estimate of orientation yet
-      ImuMsg.orientation_covariance={-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0};
+     // ImuMsg.orientation_covariance={-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0};
 
       //uknown covariance
-      ImuMsg.angular_velocity_covariance=ImuMsg.linear_acceleration_covariance=
+      ImuMsg.orientation_covariance=ImuMsg.angular_velocity_covariance=ImuMsg.linear_acceleration_covariance=
           {0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0};
 
       uint64_t time_microsec_beg =  strtoull(record[5].c_str(),(char**)NULL,10);
@@ -412,7 +412,7 @@ int main(int argc, char **argv)
   //const int PacketsPerRevolution=1808/10; //packet rate /HZ 32e
 
   //const int PacketsPerRevolution=1508/10; //packet rate /HZ vlp16
-  bool dumpperrevolution=true;
+  bool dumpperrevolution=false;
 
 
 
