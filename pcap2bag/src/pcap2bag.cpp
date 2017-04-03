@@ -120,7 +120,9 @@ void ReadImuFile2bag(std::string file, rosbag::Bag &bag_out, ros::Time StartTime
         counterIMU++;
         bag_out.write("imu",ImuMsg.header.stamp,ImuMsg);
         std::cout<<"\rsaving Imu msg "<<ImuMsg.header.stamp;
-      }else
+
+      }
+      else
       {
         std::cout<<"\rdiscard Imu msg "<<ImuMsg.header.stamp;
       }
@@ -400,9 +402,6 @@ int main(int argc, char **argv)
   ns.setParam("read_once",true);
   velodyne_driver::InputPCAP inputpcap(ns,2368,100,pcapfile);
 
-
-
-
   velodyne_rawdata::RawData data_;
 
   std::string calibfile="/home/mehdi/velodyne_ws/src/velodyne/velodyne_pointcloud/params/32db.yaml";
@@ -412,7 +411,7 @@ int main(int argc, char **argv)
   //const int PacketsPerRevolution=1808/10; //packet rate /HZ 32e
 
   //const int PacketsPerRevolution=1508/10; //packet rate /HZ vlp16
-  bool dumpperrevolution=false;
+  bool dumpperrevolution=true;
 
 
 
@@ -420,21 +419,38 @@ int main(int argc, char **argv)
   data_.setParameters(0,130,0,0);
   velodyne_msgs::VelodynePacket vp;
   int counter=1;
+  int RevolutionCounter=0;
 
   // allocate a point cloud with same time and frame ID as raw data
   velodyne_rawdata::VPointCloud inPc_;
 
   std::string frame_id="velodyne";
   ros::Time FirstPacketTime, EndPacketTime;
-  std::ofstream sampledataofs(BaseName+"_sample.xyz");
+  std::ofstream sampledataofs;//(BaseName+"_sample.xyz")
 
+  //2D laser scan
+  sensor_msgs::LaserScan::Ptr scan_out=boost::make_shared<sensor_msgs::LaserScan>();
+  int num_of_bins=36000;
+  scan_out->ranges.resize(num_of_bins);
+  scan_out->intensities.resize(num_of_bins);
+  scan_out->angle_min =0.0;
+  scan_out->angle_max =2.0*float(3.141592);
+  scan_out->angle_increment = 0.01/180.0*3.141592;// angular_res / rad_to_deg;
+  float range_min = 1e7f, range_max = -1e7f;
+  for (int i = 0; i < num_of_bins; ++i)
+  {
+    scan_out->ranges[i] = range_min;
+    scan_out->intensities[i] = 0.0f;
+  }
+  scan_out->range_min=range_min;
+  scan_out->range_max=range_max;
 
   inPc_.points.clear();
   inPc_.width = 0;
   inPc_.height = 1;
-  bool sampleoutput=false;
 
-  uint16_t previousrotation;
+  uint16_t previousrotation=1000;
+  bool outputcsv=false;
   while (inputpcap.getPacket(&vp,0)!=-1)
   {
 
@@ -446,49 +462,63 @@ int main(int argc, char **argv)
     if(raw->blocks[0].rotation>=previousrotation)
       NewRevolution=false;
     else
+    {
       NewRevolution=true;
+      RevolutionCounter++;
+      sampledataofs.close();
+      if(outputcsv)
+        sampledataofs.open(BaseName+"_"+std::to_string(RevolutionCounter)+".csv");
+
+    }
     previousrotation=raw->blocks[0].rotation;
 
-
     vp.stamp=ros::Time(vp.stamp.sec,vp.stamp.nsec);
-    data_.unpack_simple(vp,inPc_);
+
+    data_.unpack_simple(vp,inPc_, scan_out);
 
     if( (dumpperrevolution && NewRevolution) || !dumpperrevolution)
     {
       if(inPc_.width<1)
          continue;
 
-    sensor_msgs::PointCloud2 pc2;
+        sensor_msgs::PointCloud2 pc2;
+        pcl::toROSMsg(inPc_,pc2);
 
-    pcl::toROSMsg(inPc_,pc2);
+        //sensor_msgs::LaserScan::Ptr laserscan= process(inPc_);
+        scan_out->header.stamp=pc2.header.stamp=vp.stamp;
+        scan_out->header.frame_id=pc2.header.frame_id=frame_id;
+        scan_out->scan_time = (vp.stamp-EndPacketTime).toSec();      // TODO: get the value from Velodyne, fixed to 10Hz for now
+        scan_out->time_increment = scan_out->scan_time / float(num_of_bins);
 
-    sensor_msgs::LaserScan::Ptr laserscan= process(inPc_);
-    pc2.header.stamp=vp.stamp;
 
-    laserscan->header.stamp=vp.stamp;
-    laserscan->header.frame_id=frame_id;
+        bag_out.write("points2",vp.stamp,pc2);
+        bag_out.write("scan",vp.stamp,*scan_out);
 
-    pc2.header.frame_id=frame_id;
+        EndPacketTime=vp.stamp;
+        std::cout<<"\rend packet time "<<EndPacketTime ;
 
-    bag_out.write("points2",pc2.header.stamp,pc2);
-    //bag_out.write("scan",laserscan->header.stamp,*laserscan);
-    EndPacketTime=vp.stamp;
+        if(outputcsv)
+        {
+          for (int k=0;k<inPc_.points.size();k++)
+          {
+            sampledataofs<<inPc_.points[k].x<<","<<inPc_.points[k].y<<","<<inPc_.points[k].z<<std::endl;
+          }
+        }
 
-    std::cout<<"\rend packet time "<<EndPacketTime ;
+        //clearing data structures
+        inPc_.points.clear();
+        inPc_.width = 0;
+        inPc_.height = 1;
 
-    if(!sampleoutput)
-    {
-      for (int k=0;k<inPc_.points.size();k++)
-      {
-        sampledataofs<<inPc_.points[k].x<<" "<<inPc_.points[k].y<<" "<<inPc_.points[k].z<<std::endl;
-      }
-      sampledataofs.close();
-      sampleoutput=true;
-    }
+        for (int i = 0; i < num_of_bins; ++i)
+        {
+          scan_out->ranges[i] = range_min;
+          scan_out->intensities[i] = 0.0f;
+        }
+        scan_out->range_min=range_min;
+        scan_out->range_max=range_max;
 
-      inPc_.points.clear();
-      inPc_.width = 0;
-      inPc_.height = 1;
+
     }
 
     if(counter==1)
@@ -504,9 +534,9 @@ int main(int argc, char **argv)
 
   }
 
+  sampledataofs.close();
   //reading imu file
   ReadImuFile2bag(ImuFile,bag_out, FirstPacketTime, EndPacketTime);
-
   bag_out.close();
-  sampledataofs.close();
+
 }
