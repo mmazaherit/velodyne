@@ -404,19 +404,19 @@ int main(int argc, char **argv)
 
   velodyne_rawdata::RawData data_;
 
-  std::string calibfile="/home/mehdi/velodyne_ws/src/velodyne/velodyne_pointcloud/params/32db.yaml";
+  std::string calibfile="";//"/home/mehdi/velodyne_ws/src/velodyne/velodyne_pointcloud/params/32db.yaml";
   //std::string calibfile="/home/mehdi/velodyne_ws/src/velodyne/velodyne_pointcloud/params/VLP16db.yaml";
 
   // 754 Packets/Second for Last or Strongest mode 1508 for dual (VLP-16 User Manual)
   //const int PacketsPerRevolution=1808/10; //packet rate /HZ 32e
 
   //const int PacketsPerRevolution=1508/10; //packet rate /HZ vlp16
-  bool dumpperrevolution=true;
+  bool dumpperrevolution=false;
 
 
-
-  data_.setupOffline(calibfile,0,130);
-  data_.setParameters(0,130,0,0);
+  //unpack_simple function doesn't use these parameters
+  //data_.setupOffline(calibfile,0,130);
+  //data_.setParameters(0,130,0,0);
   velodyne_msgs::VelodynePacket vp;
   int counter=1;
   int RevolutionCounter=0;
@@ -492,7 +492,9 @@ int main(int argc, char **argv)
 
 
         bag_out.write("points2",vp.stamp,pc2);
-        bag_out.write("scan",vp.stamp,*scan_out);
+
+        if(dumpperrevolution)
+          bag_out.write("scan",vp.stamp,*scan_out);
 
         EndPacketTime=vp.stamp;
         std::cout<<"\rend packet time "<<EndPacketTime ;
